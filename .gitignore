@@ -1,0 +1,13 @@
+# Python venv
+.venv/
+
+# Local runs and logs
+runs/
+
+# Environment files
+.env
+
+# Bytecode
+__pycache__/
+*.py[cod]
+

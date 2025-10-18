@@ -1,0 +1,123 @@
+﻿from typing import Dict, List
+
+# Ensure audioop is available on Python 3.13 (via audioop-lts)
+try:
+    import audioop  # type: ignore # noqa: F401
+except Exception:
+    pass
+
+import json
+import gradio as gr
+
+from .data import load_claims
+from .pipeline import EvalConfig
+from .simple import evaluate_claims_simple
+from .metrics import aggregate_worst_of_k
+
+
+def build_ui() -> gr.Blocks:
+    with gr.Blocks(title="Herb Misinformation Eval") as demo:
+        gr.Markdown("""
+        # LLM Herbs Eval â€” Risk-Aware
+        Evaluate misinformation risk on medicinal herb claims using a small, deterministic pipeline.
+        """)
+
+        with gr.Row():
+            with gr.Column(scale=1):
+                model = gr.Dropdown(
+                    label="Model Name",
+                    value="mock/any",
+                    choices=[
+                        "mock/any",
+                        "openai/gpt-4o-mini",
+                        "openai/gpt-4o",
+                        "ollama/llama3.1",
+                    ],
+                )
+                k = gr.Radio(label="k (responses per claim)", choices=[1, 3, 5], value=3)
+                max_claims = gr.Slider(label="Max claims", minimum=1, maximum=40, step=1, value=10)
+                judge_prompt = gr.Radio(label="Judge prompt", choices=["A", "B"], value="A")
+                temperature = gr.Slider(
+                    label="Temperature (<=0.3)", minimum=0.0, maximum=0.3, step=0.05, value=0.1
+                )
+                seed = gr.Number(label="Seed", value=42, precision=0)
+                run_btn = gr.Button("Run Evaluation", variant="primary")
+                status = gr.Markdown("Ready.")
+
+            with gr.Column(scale=2):
+                out_metrics = gr.JSON(label="Metrics")
+                out_table = gr.Dataframe(
+                    headers=[
+                        "id",
+                        "claim",
+                        "harm_category",
+                        "harm_weight",
+                        "judgements",
+                    ],
+                    datatype=["str", "str", "str", "number", "str"],
+                    interactive=False,
+                    wrap=True,
+                    label="Per-claim results (worst-of-k)"
+                )
+                run_dir = gr.Textbox(label="Run directory", interactive=False)
+
+        def _run(model_name, k_val, max_n, judge_v, temp, seed_val):
+            status_text = "Running..."
+            try:
+                cfg = EvalConfig(
+                    model_name=model_name,
+                    judge_model_name=None,
+                    judge_prompt_version=str(judge_v),
+                    k=int(k_val),
+                    temperature=float(temp),
+                    seed=int(seed_val),
+                )
+                claims = load_claims()[: int(max_n)]
+                # Use simple driver to avoid LangGraph write semantics issues
+                out = evaluate_claims_simple(
+                    claims,
+                    model_name=cfg.model_name,
+                    k=cfg.k,
+                    temperature=cfg.temperature,
+                    seed=cfg.seed,
+                    judge_prompt_version=cfg.judge_prompt_version,
+                )
+                metrics = out["metrics"]
+                # Gradio Dataframe expects list-of-lists (or pandas df), not dict rows
+                headers = [
+                    "id",
+                    "claim",
+                    "harm_category",
+                    "harm_weight",
+                    "judgements",
+                ]
+                rows = [
+                    [
+                        r.get("id", ""),
+                        r.get("claim", ""),
+                        r.get("harm_category", ""),
+                        r.get("harm_weight", 0),
+                        json.dumps(r.get("judgements", [])),
+                    ]
+                    for r in out["results"]
+                ]
+                status_text = "Done."
+                return metrics, rows, out["run_dir"], status_text
+            except Exception as e:
+                return {}, [], "", f"Error: {e}"
+
+        run_btn.click(
+            _run,
+            inputs=[model, k, max_claims, judge_prompt, temperature, seed],
+            outputs=[out_metrics, out_table, run_dir, status],
+        )
+
+        gr.Markdown(
+            "Note: Requires API key for selected provider (e.g., OpenAI). All prompts and outputs are logged as JSON under runs/."
+        )
+
+    return demo
+
+
+if __name__ == "__main__":
+    build_ui().launch()
