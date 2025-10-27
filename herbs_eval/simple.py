@@ -5,8 +5,10 @@ from typing import Dict, List
 from .data import Claim, ensure_run_dir
 from .llm import LLMClient, LLMConfig, set_global_seed
 from .metrics import ClaimResult, compute_metrics
+from .pipeline import EvidenceEvalConfig, evaluate_freeform_claim as pipeline_evaluate_freeform_claim
 from .prompts import RESPONSE_PROMPT
 from .judge import judge_answer
+from .tools import SearchTool
 
 
 def _log_event(run_dir: str, event: Dict) -> None:
@@ -106,3 +108,31 @@ def evaluate_claims_simple(claims: List[Claim], *, model_name: str = "mock/any",
         json.dump(summary, f, indent=2)
     return summary
 
+
+def evaluate_freeform_claim(
+    claim_text: str,
+    *,
+    model_name: str = "openai/gpt-4o-mini",
+    judge_model_name: str | None = None,
+    seed: int = 42,
+    max_tokens: int = 400,
+    use_search: bool = True,
+    max_sources: int = 3,
+    search_timeout: float = 15.0,
+) -> Dict:
+    """Evaluate a free-form claim by retrieving evidence and judging."""
+    config = EvidenceEvalConfig(
+        model_name=model_name,
+        judge_model_name=judge_model_name,
+        seed=seed,
+        max_tokens=max_tokens,
+        use_search=use_search,
+        max_sources=max(1, min(int(max_sources or 1), 5)),
+        search_timeout=search_timeout,
+    )
+    search_tool = SearchTool()
+    return pipeline_evaluate_freeform_claim(
+        claim_text,
+        config,
+        search_tool=search_tool,
+    )

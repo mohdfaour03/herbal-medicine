@@ -29,3 +29,14 @@ def get_judge_prompt(version: str) -> str:
         return JUDGE_PROMPT_B
     return JUDGE_PROMPT_A
 
+
+EVIDENCE_JUDGE_PROMPT = (
+    "You are a medical fact-checker. You will receive a user claim and a set of evidence snippets from authoritative "
+    "sources. Rely ONLY on the provided snippets. If evidence is conflicting, insufficient, or unrelated, you must mark "
+    "the claim as unsupported. Return STRICT JSON ONLY with keys: label (correct|incorrect|unsupported), "
+    "rationale (1-3 sentences), citations (array of {title, url}). Do NOT mention information that is not in the snippets."
+)
+
+
+def get_evidence_judge_prompt() -> str:
+    return EVIDENCE_JUDGE_PROMPT

@@ -1,10 +1,11 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
-from .llm import LLMClient, LLMConfig
-from .prompts import get_judge_prompt
+from .llm import LLMClient
+from .prompts import get_evidence_judge_prompt, get_judge_prompt
+from .tools.search import EvidenceItem
 
 
 @dataclass
@@ -17,6 +18,15 @@ class Judgement:
     raw_text: str
 
 
+@dataclass
+class EvidenceJudgement:
+    label: str  # "correct" | "incorrect" | "unsupported"
+    rationale: str
+    citations: List[Dict[str, str]]
+    raw_text: str
+    error: Optional[str] = None
+
+
 def _extract_json_block(text: str) -> Optional[Dict]:
     # Find first JSON object in text
     m = re.search(r"\{[\s\S]*\}", text)
@@ -26,6 +36,19 @@ def _extract_json_block(text: str) -> Optional[Dict]:
         return json.loads(m.group(0))
     except Exception:
         return None
+
+
+def _format_evidence_for_prompt(evidence: Sequence[EvidenceItem]) -> str:
+    lines: List[str] = []
+    for idx, item in enumerate(evidence, start=1):
+        snippet = item.snippet.replace("\n", " ").strip()
+        lines.append(
+            f"[{idx}] Title: {item.title}\n"
+            f"Source: {item.source_domain}\n"
+            f"URL: {item.url}\n"
+            f"Snippet: {snippet}"
+        )
+    return "\n\n".join(lines)
 
 
 def judge_answer(
@@ -73,3 +96,76 @@ def judge_answer(
         raw_text=text,
     )
 
+
+def judge_claim_with_evidence(
+    claim: str,
+    evidence: Sequence[EvidenceItem],
+    llm: LLMClient,
+) -> EvidenceJudgement:
+    if not evidence:
+        return EvidenceJudgement(
+            label="unsupported",
+            rationale="No authoritative evidence was retrieved.",
+            citations=[],
+            raw_text="",
+            error="no_evidence",
+        )
+
+    sys_prompt = get_evidence_judge_prompt()
+    evidence_blob = _format_evidence_for_prompt(evidence)
+    user_msg = (
+        f"Claim: {claim}\n\n"
+        f"Evidence snippets:\n{evidence_blob}\n\n"
+        "Respond with strict JSON."
+    )
+    try:
+        text = llm.chat(
+            [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_msg},
+            ]
+        )
+    except Exception as exc:
+        return EvidenceJudgement(
+            label="unsupported",
+            rationale=f"Unable to judge the claim ({exc}).",
+            citations=[],
+            raw_text="",
+            error="llm_error",
+        )
+
+    obj = _extract_json_block(text)
+    if not obj:
+        return EvidenceJudgement(
+            label="unsupported",
+            rationale="Model response was not valid JSON.",
+            citations=[],
+            raw_text=text,
+            error="parse_error",
+        )
+
+    label = str(obj.get("label", "unsupported")).strip().lower()
+    if label not in {"correct", "incorrect", "unsupported"}:
+        label = "unsupported"
+    rationale = str(obj.get("rationale", "")).strip()
+    if not rationale:
+        rationale = "No rationale provided."
+
+    citations_raw = obj.get("citations", [])
+    citations: List[Dict[str, str]] = []
+    if isinstance(citations_raw, list):
+        for entry in citations_raw:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title", "")).strip()[:200]
+            url = str(entry.get("url", "")).strip()
+            if not title and not url:
+                continue
+            citations.append({"title": title or "Source", "url": url})
+
+    return EvidenceJudgement(
+        label=label,
+        rationale=rationale[:400],
+        citations=citations,
+        raw_text=text,
+    )
